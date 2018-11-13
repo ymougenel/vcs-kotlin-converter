@@ -18,7 +18,8 @@ import com.intellij.psi.PsiJavaFile
 import com.intellij.psi.PsiManager
 import com.intellij.vcsUtil.VcsUtil
 import java.io.IOException
-import java.util.*
+import java.util.stream.Collectors
+import kotlin.collections.ArrayList
 
 /**
  * Custom action executing the following steps on each selected file(s):
@@ -61,7 +62,7 @@ class RenameAndConvertJavaToKotlinAction : AnAction() {
         /**
          * Commit message for the file renaming step.
          */
-        private const val COMMIT_MSG = "WIP: Renaming file '%s' with Kotlin extension"
+        private const val COMMIT_MSG = "WIP: Renaming file(s) with Kotlin extension: %s"
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -72,6 +73,7 @@ class RenameAndConvertJavaToKotlinAction : AnAction() {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
+        val changes = ArrayList<Pair<VirtualFile, ContentRevision>>();
 
         selectedJavaFiles(e)
                 .filter { it.isWritable }
@@ -79,20 +81,25 @@ class RenameAndConvertJavaToKotlinAction : AnAction() {
                 .forEach {
                     // Storing initial Java file content revision (before first rename step).
                     val before = contentRevision(it)
-
                     // Renaming Java file with Kotlin extension.
                     renameFile(project, it, it.nameWithoutExtension + KOTLIN_EXTENSION)
+                    // Store the change, among with the affected file
+                    changes.add(Pair(it, before))
+                }
 
-                    // Committing renaming action into VCS.
-                    commit(project, it, before)
+        // Commit all the changes
+        commit(project, changes)
 
-                    // Renaming 'Kotlin file' back to Java extension.
-                    renameFile(project, it, it.nameWithoutExtension + JAVA_EXTENSION)
+        // Renaming 'Kotlin files' back to Java extension.
+        changes.stream()
+                .forEach {
+                    renameFile(project, it.first, it.first.nameWithoutExtension + JAVA_EXTENSION)
                 }
 
         // Invoking native 'Convert Java to Kotlin File' action.
         ActionManager.getInstance().getAction(CONVERT_JAVA_TO_KOTLIN_PLUGIN_ID)?.actionPerformed(e)
     }
+
 
     override fun update(e: AnActionEvent) {
         val virtualFiles = e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY) ?: return
@@ -119,19 +126,27 @@ class RenameAndConvertJavaToKotlinAction : AnAction() {
         }
     }
 
-    private fun commit(project: Project, virtualFile: VirtualFile, before: ContentRevision) {
+    private fun commit(project: Project, changes: ArrayList<Pair<VirtualFile, ContentRevision>>) {
 
-        if (!VcsUtil.isFileUnderVcs(project, virtualFile.path)) {
-            logger.info("File '$virtualFile' is not under VCS, aborting commit")
-            return
+        //TODO check file is under VCS
+        val allChanges = ArrayList<Change>()
+        for (el in changes) {
+            allChanges.add(Change(contentRevision(el.first), el.second))
         }
 
-        val after = contentRevision(virtualFile)
-        val vcs = VcsUtil.getVcsFor(project, virtualFile)
+        // TODO handle the vcs in a better way
+        val vcs = VcsUtil.getVcsFor(project, changes.get(0).first)
 
-        vcs?.checkinEnvironment?.commit(listOf(Change(before, after)),
-                COMMIT_MSG.format(virtualFile.nameWithoutExtension))
+        val fileNamesCombined: String = changes.stream()
+                .map { c -> c.first.nameWithoutExtension }
+                .collect(Collectors.joining(","))
+
+        logger.info("Commiting files: '${fileNamesCombined}'")
+        val message = COMMIT_MSG.format(fileNamesCombined)
+        vcs?.checkinEnvironment?.commit(allChanges,
+                message)
     }
+
 
     private fun contentRevision(virtualFile: VirtualFile): CurrentContentRevision {
         val contextFactory = VcsContextFactory.SERVICE.getInstance()
