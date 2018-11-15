@@ -18,7 +18,6 @@ import com.intellij.psi.PsiJavaFile
 import com.intellij.psi.PsiManager
 import com.intellij.vcsUtil.VcsUtil
 import java.io.IOException
-import java.util.stream.Collectors
 import kotlin.collections.ArrayList
 
 /**
@@ -63,6 +62,11 @@ class RenameAndConvertJavaToKotlinAction : AnAction() {
          * Commit message for the file renaming step.
          */
         private const val COMMIT_MSG = "WIP: Renaming file(s) with Kotlin extension: %s"
+
+        /**
+         * Max number of file names displayed in commit message.
+         */
+        private const val MAX_FILE_NAMES = 5
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -126,25 +130,29 @@ class RenameAndConvertJavaToKotlinAction : AnAction() {
         }
     }
 
-    private fun commit(project: Project, changes: ArrayList<Pair<VirtualFile, ContentRevision>>) {
+    private fun commit(project: Project, changes: List<Pair<VirtualFile, ContentRevision>>) {
 
-        //TODO check file is under VCS
-        val allChanges = ArrayList<Change>()
-        for (el in changes) {
-            allChanges.add(Change(contentRevision(el.first), el.second))
+        val allChanges = changes
+                .filter { VcsUtil.isFileUnderVcs(project, it.first.path) }
+                .map { FileAndChange(it.first, Change(contentRevision(it.first), it.second)) }
+
+        if (allChanges.isEmpty()) {
+            logger.info("No file under VCS, aborting commit")
+            return
         }
 
-        // TODO handle the vcs in a better way
-        val vcs = VcsUtil.getVcsFor(project, changes.get(0).first)
+        val vcs = VcsUtil.getVcsFor(project, allChanges.first().virtualFile)
 
-        val fileNamesCombined: String = changes.stream()
-                .map { c -> c.first.nameWithoutExtension }
-                .collect(Collectors.joining(","))
+        val fileNamesCombined: String = allChanges
+                .take(MAX_FILE_NAMES)
+                .joinToString(separator = ", ", postfix = when (allChanges.size > MAX_FILE_NAMES) {
+                    true -> "..."
+                    false -> ""
+                }) { it.virtualFile.nameWithoutExtension }
 
         logger.info("Commiting files: '${fileNamesCombined}'")
         val message = COMMIT_MSG.format(fileNamesCombined)
-        vcs?.checkinEnvironment?.commit(allChanges,
-                message)
+        vcs?.checkinEnvironment?.commit(allChanges.map { it.change }, message)
     }
 
 
@@ -187,3 +195,5 @@ class RenameAndConvertJavaToKotlinAction : AnAction() {
         return result
     }
 }
+
+data class FileAndChange(val virtualFile: VirtualFile, val change: Change)
